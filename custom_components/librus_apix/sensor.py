@@ -92,8 +92,50 @@ def _lekcje_dnia(plan: List[Dict], dzien: date) -> List[Dict]:
     klucz = dzien.strftime("%Y-%m-%d")
     return sorted(
         (l for l in plan if l.get("data") == klucz),
-        key=lambda l: l.get("numer", 0),
+        key=lambda l: l.get("numer") or 0,
     )
+
+
+def _lekcja_zwarta(lekcja: Dict) -> Dict:
+    """Skrocona lekcja do planu tygodniowego (mniejszy atrybut encji)."""
+    return {
+        "numer": lekcja.get("numer"),
+        "od": lekcja.get("od"),
+        "do": lekcja.get("do"),
+        "przedmiot": lekcja.get("przedmiot"),
+        "nauczyciel_sala": lekcja.get("nauczyciel_sala"),
+        "uwagi": lekcja.get("uwagi", []),
+        "odwolana": bool(lekcja.get("odwolana")),
+    }
+
+
+def _plan_tygodnia(plan: List[Dict], poniedzialek: date) -> Dict[str, Any]:
+    """Zbuduj plan tygodnia dzien po dniu (sobota/niedziela tylko gdy maja lekcje)."""
+    dni = []
+    kolejne_dni = [
+        (i, poniedzialek + timedelta(days=i), _lekcje_dnia(plan, poniedzialek + timedelta(days=i)))
+        for i in range(7)
+    ]
+    if not any(lekcje for _, _, lekcje in kolejne_dni):
+        # brak danych na ten tydzien (ferie albo jeszcze nie pobrany): karta pokaze "Brak planu"
+        return {
+            "od": poniedzialek.strftime("%Y-%m-%d"),
+            "do": (poniedzialek + timedelta(days=6)).strftime("%Y-%m-%d"),
+            "dni": [],
+        }
+    for i, dzien, lekcje in kolejne_dni:
+        if i >= 5 and not lekcje:
+            continue
+        dni.append({
+            "data": dzien.strftime("%Y-%m-%d"),
+            "dzien": _DNI_TYGODNIA[i],
+            "lekcje": [_lekcja_zwarta(l) for l in lekcje],
+        })
+    return {
+        "od": poniedzialek.strftime("%Y-%m-%d"),
+        "do": (poniedzialek + timedelta(days=6)).strftime("%Y-%m-%d"),
+        "dni": dni,
+    }
 
 
 def _aktualna_i_nastepna(
@@ -137,6 +179,7 @@ async def async_setup_entry(
         LibrusTerminarzSensor(coordinator, config_entry),
         LibrusPlanDzisSensor(coordinator, config_entry),
         LibrusNastepnaLekcjaSensor(coordinator, config_entry),
+        LibrusPlanTygodnioweSensor(coordinator, config_entry),
     ]
 
     # Tworz czujniki per przedmiot na podstawie pierwszego pobrania danych
@@ -698,6 +741,47 @@ class LibrusPlanDzisSensor(_LibrusPlanSensor):
             "liczba_odwolanych": len(lekcje) - len(odbywajace_sie),
             "pierwsza_lekcja_od": odbywajace_sie[0]["od"] if odbywajace_sie else None,
             "ostatnia_lekcja_do": odbywajace_sie[-1]["do"] if odbywajace_sie else None,
+        }
+
+
+class LibrusPlanTygodnioweSensor(_LibrusPlanSensor):
+    """Czujnik z planem tygodnia: biezacy i nastepny tydzien (stan = liczba lekcji w tym tygodniu)."""
+
+    # Szczegoly planu (nauczyciele, sale) to dane osobowe - nie zapisuj ich w historii.
+    _unrecorded_attributes = frozenset({
+        "biezacy_tydzien", "nastepny_tydzien", "liczba_odwolanych",
+    })
+
+    def __init__(self, coordinator: LibrusDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
+        """Inicjalizacja."""
+        super().__init__(coordinator, config_entry)
+        self._attr_name = "Plan lekcji tydzien"
+        self._attr_unique_id = f"{config_entry.entry_id}_plan_tydzien"
+        self._attr_icon = "mdi:calendar-week"
+
+    def _poniedzialek(self) -> date:
+        dzis = self._teraz().date()
+        return dzis - timedelta(days=dzis.weekday())
+
+    @property
+    def native_value(self) -> int:
+        """Liczba lekcji w biezacym tygodniu, ktore sie odbeda (bez odwolanych)."""
+        tydzien = _plan_tygodnia(self._plan, self._poniedzialek())
+        return sum(
+            1 for dzien in tydzien["dni"] for l in dzien["lekcje"] if not l["odwolana"]
+        )
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        poniedzialek = self._poniedzialek()
+        biezacy = _plan_tygodnia(self._plan, poniedzialek)
+        nastepny = _plan_tygodnia(self._plan, poniedzialek + timedelta(days=7))
+        return {
+            "biezacy_tydzien": biezacy,
+            "nastepny_tydzien": nastepny,
+            "liczba_odwolanych": sum(
+                1 for dzien in biezacy["dni"] for l in dzien["lekcje"] if l["odwolana"]
+            ),
         }
 
 

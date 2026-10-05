@@ -24,6 +24,7 @@ Integracja tworzy następujące sensory:
 | `sensor.librus_srednia_ocen` | **Globalna średnia** ze wszystkich przedmiotów | float (wykres 📈) |
 | `sensor.librus_wiadomosci` | Ostatnie 5 wiadomości z pełną treścią | liczba nieprzeczytanych |
 | `sensor.librus_imie_nazwisko_plan_lekcji_dzis` | Plan lekcji na dziś (atrybut `lekcje`: numer, godziny, przedmiot, nauczyciel/sala, `uwagi`, `odwolana`) | liczba lekcji, które się odbędą (bez odwołanych) |
+| `sensor.librus_imie_nazwisko_plan_lekcji_tydzien` | Plan tygodnia dzień po dniu: atrybuty `biezacy_tydzien` i `nastepny_tydzien` (`dni` → `lekcje`), `liczba_odwolanych` | liczba lekcji w bieżącym tygodniu (bez odwołanych) |
 | `sensor.librus_imie_nazwisko_nastepna_lekcja` | Następna lekcja, także z kolejnego dnia (np. w piątek po lekcjach → poniedziałek) (stan zmienia się na granicy lekcji) | przedmiot lub `brak` |
 | `sensor.librus_<przedmiot>` | Oceny z danego przedmiotu (np. `sensor.librus_matematyka`) | lista ocen: "4, 3+, 5" |
 | `sensor.librus_srednia_<przedmiot>` | **Średnia** z danego przedmiotu (np. `sensor.librus_srednia_matematyka`) | float (wykres 📈) |
@@ -204,6 +205,29 @@ content: >
   **Następna lekcja:** {{ states('sensor.librus_imie_nazwisko_nastepna_lekcja') }}
   {% if state_attr('sensor.librus_imie_nazwisko_nastepna_lekcja', 'od') %}
   ({{ state_attr('sensor.librus_imie_nazwisko_nastepna_lekcja', 'dzien') }}, {{ state_attr('sensor.librus_imie_nazwisko_nastepna_lekcja', 'od') }}){% endif %}
+```
+
+### Karta planu tygodnia (siatka)
+
+> Używa encji `..._plan_lekcji_tydzien` (bieżący tydzień; dla następnego zmień `biezacy_tydzien` na `nastepny_tydzien`).
+> Wiersze to numery lekcji, kolumny to dni; odwołane lekcje są przekreślone, zastępstwa mają ⚠️.
+
+```yaml
+type: markdown
+title: 📅 Plan tygodnia
+content: |
+  {% set t = state_attr('sensor.librus_imie_nazwisko_plan_lekcji_tydzien', 'biezacy_tydzien') %}
+  {%- if t and t.dni %}
+  {%- set skr = {'poniedzialek': 'Pn', 'wtorek': 'Wt', 'sroda': 'Śr', 'czwartek': 'Cz', 'piatek': 'Pt', 'sobota': 'So', 'niedziela': 'Nd'} %}
+  {%- set dni = t.dni %}
+  | Nr | {% for d in dni %}{{ skr[d.dzien] }} {{ d.data[8:10] }}.{{ d.data[5:7] }} | {% endfor %}
+  |:--:|{% for d in dni %}---|{% endfor %}
+  {%- for nr in dni | map(attribute='lekcje') | sum(start=[]) | map(attribute='numer') | unique | sort %}
+  | {{ nr }} | {% for d in dni %}{% set l = d.lekcje | selectattr('numer', 'eq', nr) | list %}{% if l %}{{ '~~' if l[0].odwolana }}{{ l[0].przedmiot | replace('|', '/') }}{{ '~~' if l[0].odwolana }}{{ ' ⚠️' if l[0].uwagi and not l[0].odwolana }}{% endif %} | {% endfor %}
+  {%- endfor %}
+  {%- else %}
+  Brak planu na ten tydzień.
+  {%- endif %}
 ```
 
 ### Karta terminarza (wszystkie zdarzenia)

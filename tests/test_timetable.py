@@ -14,6 +14,8 @@ from custom_components.librus_apix import sensor as sensor_mod
 from custom_components.librus_apix.sensor import (
     LibrusNastepnaLekcjaSensor,
     LibrusPlanDzisSensor,
+    LibrusPlanTygodnioweSensor,
+    _plan_tygodnia,
     _aktualna_i_nastepna,
     _lekcje_dnia,
     _parse_godzina,
@@ -428,3 +430,93 @@ def test_czujnik_rejestruje_odswiezanie_na_pelnej_minucie():
     track.assert_called_once()
     args, kwargs = track.call_args
     assert args[1] == czujnik._odswiez_stan and kwargs == {"second": 0}
+
+
+# --- plan tygodniowy --------------------------------------------------------
+
+PLAN_2_TYGODNIE = PLAN + [
+    dict(_lekcja("2026-10-05", 3, "09:45", "10:30", "Fizyka"), odwolana=True),
+    _lekcja("2026-10-10", 1, "09:00", "09:45", "Dodatkowe"),  # sobota
+    _lekcja("2026-10-12", 1, "08:00", "08:45", "Chemia"),  # poniedzialek nastepnego tygodnia
+]
+
+
+def test_plan_tygodnia_dni_i_weekend():
+    tydzien = _plan_tygodnia(PLAN_2_TYGODNIE, date(2026, 10, 5))
+    assert (tydzien["od"], tydzien["do"]) == ("2026-10-05", "2026-10-11")
+    dni = {d["dzien"]: d for d in tydzien["dni"]}
+    assert list(dni)[:2] == ["poniedzialek", "wtorek"]
+    assert "sobota" in dni and "niedziela" not in dni  # niedziela bez lekcji pominieta
+    assert [l["numer"] for l in dni["poniedzialek"]["lekcje"]] == [1, 2, 3]
+    assert dni["poniedzialek"]["lekcje"][2]["odwolana"] is True
+    # zwarty format: bez przerw i daty w kazdej lekcji
+    assert set(dni["wtorek"]["lekcje"][0]) == {
+        "numer", "od", "do", "przedmiot", "nauczyciel_sala", "uwagi", "odwolana",
+    }
+
+
+def test_czujnik_plan_tygodniowy():
+    czujnik, p = _czujnik(
+        LibrusPlanTygodnioweSensor, PLAN_2_TYGODNIE, datetime(2026, 10, 7, 12, 0)
+    )
+    try:
+        # biezacy tydzien: 5 lekcji (pn 3, wt 1, sob 1), z czego 1 odwolana => 4 sie odbeda
+        assert czujnik.native_value == 4
+        attrs = czujnik.extra_state_attributes
+        assert attrs["liczba_odwolanych"] == 1
+        assert attrs["biezacy_tydzien"]["od"] == "2026-10-05"
+        assert attrs["nastepny_tydzien"]["od"] == "2026-10-12"
+        assert attrs["nastepny_tydzien"]["dni"][0]["lekcje"][0]["przedmiot"] == "Chemia"
+    finally:
+        p.stop()
+
+
+def test_czujnik_plan_tygodniowy_pusty_plan_i_rozmiar():
+    czujnik, p = _czujnik(LibrusPlanTygodnioweSensor, [], datetime(2026, 10, 7, 12, 0))
+    try:
+        assert czujnik.native_value == 0
+        assert czujnik.extra_state_attributes["biezacy_tydzien"]["dni"] == []
+        assert czujnik.extra_state_attributes["liczba_odwolanych"] == 0
+    finally:
+        p.stop()
+    # realistyczny rozmiar: 2 tygodnie x 5 dni x 8 lekcji musi zmiescic sie w limicie 16 KB
+    import json
+
+    duzy = [
+        dict(
+            _lekcja(f"2026-10-{5 + d + 7 * w:02d}", n, "08:00", "08:45", "Przedmiot dlugi %d" % n),
+            nauczyciel_sala="Anna Maria Kowalska-Nowak - sala 12A",
+            uwagi=["zastepstwo"],
+        )
+        for w in (0, 1) for d in range(5) for n in range(1, 9)
+    ]
+    czujnik, p = _czujnik(LibrusPlanTygodnioweSensor, duzy, datetime(2026, 10, 7, 12, 0))
+    try:
+        assert len(json.dumps(czujnik.extra_state_attributes, ensure_ascii=False)) < 16000
+    finally:
+        p.stop()
+
+
+def test_plan_tygodnia_tydzien_bez_danych_ma_puste_dni():
+    tydzien = _plan_tygodnia(PLAN_2_TYGODNIE, date(2026, 10, 19))  # tygodnia nie ma w danych
+    assert tydzien["dni"] == []
+    assert (tydzien["od"], tydzien["do"]) == ("2026-10-19", "2026-10-25")
+
+
+def test_czujnik_plan_tygodniowy_po_przejsciu_na_nowy_tydzien():
+    # poniedzialek 00:05: biezacym staje sie dawny "nastepny", a kolejnego tygodnia jeszcze nie ma
+    czujnik, p = _czujnik(
+        LibrusPlanTygodnioweSensor, PLAN_2_TYGODNIE, datetime(2026, 10, 12, 0, 5)
+    )
+    try:
+        attrs = czujnik.extra_state_attributes
+        assert attrs["biezacy_tydzien"]["dni"][0]["lekcje"][0]["przedmiot"] == "Chemia"
+        assert attrs["nastepny_tydzien"]["dni"] == []
+        assert czujnik.native_value == 1
+    finally:
+        p.stop()
+
+
+def test_lekcja_bez_numeru_nie_psuje_sortowania():
+    plan = [dict(_lekcja("2026-10-05", 2, "08:55", "09:40"), numer=None), PLAN[0]]
+    assert len(_lekcje_dnia(plan, date(2026, 10, 5))) == 2
