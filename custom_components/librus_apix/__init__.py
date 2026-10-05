@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 
 from librus_apix.client import Client, new_client
 from librus_apix.exceptions import TokenError
@@ -44,6 +45,20 @@ CONFIG_SCHEMA = vol.Schema(
     },
     extra=vol.ALLOW_EXTRA,
 )
+
+
+# Plan lekcji pochodzi ze scrapowanego HTML: ograniczamy dlugosc pol i liczbe wpisow,
+# zeby atrybuty encji (i historia w recorderze) nie mogly urosnac bez kontroli.
+_MAX_LEKCJI_DZIENNIE = 15
+_MAX_UWAG = 5
+
+
+def _tekst(wartosc: Any, limit: int = 100) -> str:
+    """Zamien wartosc na krotki, jednoliniowy tekst bez znakow sterujacych."""
+    if wartosc is None:
+        return ""
+    tekst = "".join(ch if ch.isprintable() else " " for ch in str(wartosc))
+    return " ".join(tekst.split())[:limit]
 
 
 class LibrusApiClient:
@@ -302,6 +317,75 @@ class LibrusApiClient:
                 self._reset_auth()
                 if attempt == 1:
                     return None
+
+    async def async_get_timetable(self):
+        """Get lesson timetable from Librus (current + next week, empty slots skipped)."""
+        for attempt in range(2):
+            try:
+                if not self._client or not self._token:
+                    if not await self.async_authenticate():
+                        return None
+
+                from datetime import date as _date, datetime as _datetime, time as _time, timedelta
+                from librus_apix.exceptions import ParseError
+                from librus_apix.timetable import get_timetable
+
+                today = dt_util.now().date()
+                monday = today - timedelta(days=today.weekday())
+                loop = asyncio.get_running_loop()
+
+                def _fetch_two_weeks():
+                    lekcje = []
+                    sparsowane_tygodnie = 0
+                    for offset in (0, 7):
+                        week_monday = _datetime.combine(monday + timedelta(days=offset), _time.min)
+                        try:
+                            week = get_timetable(self._client, week_monday)
+                        except ParseError:
+                            # np. ferie / brak planu na dany tydzien (albo chwilowa strona bledu)
+                            _LOGGER.debug("Brak planu lekcji na tydzien od %s", week_monday.date())
+                            continue
+                        sparsowane_tygodnie += 1
+                        for day in week:
+                            for period in day[:_MAX_LEKCJI_DZIENNIE]:
+                                if not period.subject:
+                                    continue
+                                lekcje.append({
+                                    "data": _tekst(period.date, 10),
+                                    "numer": period.number,
+                                    "od": _tekst(period.date_from, 8),
+                                    "do": _tekst(period.date_to, 8),
+                                    "przedmiot": _tekst(period.subject),
+                                    "nauczyciel_sala": _tekst(period.teacher_and_classroom),
+                                    "uwagi": [
+                                        _tekst(k, 50)
+                                        for k in sorted(period.info.keys())[:_MAX_UWAG]
+                                    ],
+                                    "przerwa_od": _tekst(period.next_recess_from, 8) or None,
+                                    "przerwa_do": _tekst(period.next_recess_to, 8) or None,
+                                })
+                    if not sparsowane_tygodnie:
+                        # nic sie nie sparsowalo - nie nadpisuj dobrego planu pusta lista
+                        return None
+                    return sorted(lekcje, key=lambda l: (l["data"], l["numer"]))
+
+                return await loop.run_in_executor(None, _fetch_two_weeks)
+
+            except TokenError:
+                _LOGGER.warning(
+                    "Token expired fetching timetable (attempt %d/2), re-authenticating...",
+                    attempt + 1,
+                )
+                self._reset_auth()
+                if attempt == 1:
+                    _LOGGER.error("Failed to get timetable after re-authentication.")
+                    return None
+            except Exception as ex:
+                # Plan jest pobierany jako ostatni: nie resetujemy logowania przy zwyklym bledzie,
+                # zeby nie psuc kolejnego cyklu pozostalym (dzialajacym) pobraniom.
+                _LOGGER.error("Failed to get timetable: %s", ex)
+                _LOGGER.debug("Timetable traceback:\n%s", traceback.format_exc())
+                return None
 
     async def async_get_student_information(self):
         """Get student information from Librus."""
