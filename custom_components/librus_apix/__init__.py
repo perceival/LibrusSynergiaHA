@@ -361,6 +361,11 @@ class LibrusApiClient:
                                         _tekst(k, 50)
                                         for k in sorted(period.info.keys())[:_MAX_UWAG]
                                     ],
+                                    # Librus oznacza odwolane lekcje adnotacja "odwolane"
+                                    "odwolana": any(
+                                        str(k).strip().lower().startswith("odwo")
+                                        for k in period.info.keys()
+                                    ),
                                     "przerwa_od": _tekst(period.next_recess_from, 8) or None,
                                     "przerwa_do": _tekst(period.next_recess_to, 8) or None,
                                 })

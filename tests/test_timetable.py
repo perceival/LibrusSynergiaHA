@@ -341,3 +341,69 @@ def test_klient_czysci_pola_tekstowe():
         wynik = asyncio.run(_klient().async_get_timetable())
     assert wynik[0]["przedmiot"] == "Mate matyka"
     assert len(wynik[0]["nauczyciel_sala"]) == 100
+
+
+# --- lekcje odwolane --------------------------------------------------------
+
+
+def test_odwolana_lekcja_nie_jest_nastepna_ani_trwajaca():
+    plan = [
+        dict(_lekcja("2026-10-05", 1, "08:00", "08:45", "Matematyka"), odwolana=True),
+        _lekcja("2026-10-05", 2, "08:55", "09:40", "Polski"),
+    ]
+    trwajaca, nastepna = _aktualna_i_nastepna(plan, datetime(2026, 10, 5, 8, 10))
+    assert trwajaca is None  # odwolana nie trwa
+    assert nastepna["przedmiot"] == "Polski"
+
+
+def test_czujnik_plan_dzis_nie_liczy_odwolanych():
+    plan = [
+        dict(_lekcja("2026-10-05", 1, "08:00", "08:45", "Matematyka"), odwolana=True),
+        _lekcja("2026-10-05", 2, "08:55", "09:40", "Polski"),
+    ]
+    czujnik, p = _czujnik(LibrusPlanDzisSensor, plan, datetime(2026, 10, 5, 7, 0))
+    try:
+        assert czujnik.native_value == 1
+        attrs = czujnik.extra_state_attributes
+        assert attrs["liczba_odwolanych"] == 1
+        assert attrs["pierwsza_lekcja_od"] == "08:55"  # pierwsza lekcja, ktora sie odbedzie
+        assert len(attrs["lekcje"]) == 2  # odwolana nadal widoczna na liscie
+    finally:
+        p.stop()
+
+
+def test_klient_oznacza_odwolane_lekcje():
+    odwolana = _period("Polski", 1, "2026-10-05", info={"odwołane": {}})
+    zastepstwo = _period("Fizyka", 2, "2026-10-05", info={"zastępstwo": {}})
+    with patch("librus_apix.timetable.get_timetable", return_value=[[odwolana, zastepstwo]]):
+        wynik = asyncio.run(_klient().async_get_timetable())
+    flagi = {l["przedmiot"]: l["odwolana"] for l in wynik}
+    assert flagi == {"Polski": True, "Fizyka": False}
+
+
+def test_odwolana_dopasowanie_tylko_na_poczatku_adnotacji():
+    # wielkie litery -> odwolana; dluzsza adnotacja zastepstwa zawierajaca "odwolana" -> NIE
+    a = _period("Polski", 1, "2026-10-05", info={"ODWOŁANE": {}})
+    b = _period("Fizyka", 2, "2026-10-05", info={"zastępstwo za odwołaną lekcję": {}})
+    c = _period("Chemia", 3, "2026-10-05", info={"a": {}, "b": {}, "c": {}, "d": {}, "e": {}, "odwołane": {}})
+    with patch("librus_apix.timetable.get_timetable", return_value=[[a, b, c]]):
+        wynik = asyncio.run(_klient().async_get_timetable())
+    flagi = {l["przedmiot"]: l["odwolana"] for l in wynik}
+    assert flagi == {"Polski": True, "Fizyka": False, "Chemia": True}  # Chemia: za limitem _MAX_UWAG
+    assert len(next(l for l in wynik if l["przedmiot"] == "Chemia")["uwagi"]) == 5
+
+
+def test_czujnik_plan_dzis_gdy_wszystkie_lekcje_odwolane():
+    plan = [
+        dict(_lekcja("2026-10-05", 1, "08:00", "08:45", "Matematyka"), odwolana=True),
+        dict(_lekcja("2026-10-05", 2, "08:55", "09:40", "Polski"), odwolana=True),
+    ]
+    czujnik, p = _czujnik(LibrusPlanDzisSensor, plan, datetime(2026, 10, 5, 7, 0))
+    try:
+        assert czujnik.native_value == 0
+        attrs = czujnik.extra_state_attributes
+        assert attrs["liczba_odwolanych"] == 2
+        assert attrs["pierwsza_lekcja_od"] is None and attrs["ostatnia_lekcja_do"] is None
+        assert len(attrs["lekcje"]) == 2
+    finally:
+        p.stop()

@@ -104,6 +104,8 @@ def _aktualna_i_nastepna(
     nastepna: Optional[Dict] = None
     nastepny_start: Optional[datetime] = None
     for lekcja in plan:
+        if lekcja.get("odwolana"):
+            continue
         start = _czas_lekcji(lekcja, "od")
         koniec = _czas_lekcji(lekcja, "do")
         if start is None or koniec is None:
@@ -664,7 +666,9 @@ class LibrusPlanDzisSensor(_LibrusPlanSensor):
     """Czujnik z planem lekcji na dzis (stan = liczba lekcji)."""
 
     # Szczegoly planu (nauczyciele, sale) to dane osobowe - nie zapisuj ich w historii.
-    _unrecorded_attributes = frozenset({"lekcje", "pierwsza_lekcja_od", "ostatnia_lekcja_do"})
+    _unrecorded_attributes = frozenset({
+        "lekcje", "liczba_odwolanych", "pierwsza_lekcja_od", "ostatnia_lekcja_do",
+    })
 
     def __init__(self, coordinator: LibrusDataUpdateCoordinator, config_entry: ConfigEntry) -> None:
         """Inicjalizacja."""
@@ -675,18 +679,22 @@ class LibrusPlanDzisSensor(_LibrusPlanSensor):
 
     @property
     def native_value(self) -> int:
-        return len(_lekcje_dnia(self._plan, self._teraz().date()))
+        """Liczba lekcji, ktore sie odbeda (bez odwolanych)."""
+        lekcje = _lekcje_dnia(self._plan, self._teraz().date())
+        return sum(1 for l in lekcje if not l.get("odwolana"))
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
         dzien = self._teraz().date()
         lekcje = _lekcje_dnia(self._plan, dzien)
+        odbywajace_sie = [l for l in lekcje if not l.get("odwolana")]
         return {
             "data": dzien.strftime("%Y-%m-%d"),
             "dzien": _DNI_TYGODNIA[dzien.weekday()],
             "lekcje": lekcje,
-            "pierwsza_lekcja_od": lekcje[0]["od"] if lekcje else None,
-            "ostatnia_lekcja_do": lekcje[-1]["do"] if lekcje else None,
+            "liczba_odwolanych": len(lekcje) - len(odbywajace_sie),
+            "pierwsza_lekcja_od": odbywajace_sie[0]["od"] if odbywajace_sie else None,
+            "ostatnia_lekcja_do": odbywajace_sie[-1]["do"] if odbywajace_sie else None,
         }
 
 

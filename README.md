@@ -23,8 +23,8 @@ Integracja tworzy następujące sensory:
 | `sensor.librus_oceny` | Wszystkie oceny bieżącego semestru | liczba ocen |
 | `sensor.librus_srednia_ocen` | **Globalna średnia** ze wszystkich przedmiotów | float (wykres 📈) |
 | `sensor.librus_wiadomosci` | Ostatnie 5 wiadomości z pełną treścią | liczba nieprzeczytanych |
-| `sensor.plan_lekcji_dzis` | Plan lekcji na dziś (atrybut `lekcje`: numer, godziny, przedmiot, nauczyciel/sala, uwagi o zastępstwach) | liczba lekcji |
-| `sensor.nastepna_lekcja` | Następna lekcja, także z kolejnego dnia (np. w piątek po lekcjach → poniedziałek) (stan zmienia się na granicy lekcji) | przedmiot lub `brak` |
+| `sensor.librus_imie_nazwisko_plan_lekcji_dzis` | Plan lekcji na dziś (atrybut `lekcje`: numer, godziny, przedmiot, nauczyciel/sala, `uwagi`, `odwolana`) | liczba lekcji, które się odbędą (bez odwołanych) |
+| `sensor.librus_imie_nazwisko_nastepna_lekcja` | Następna lekcja, także z kolejnego dnia (np. w piątek po lekcjach → poniedziałek) (stan zmienia się na granicy lekcji) | przedmiot lub `brak` |
 | `sensor.librus_<przedmiot>` | Oceny z danego przedmiotu (np. `sensor.librus_matematyka`) | lista ocen: "4, 3+, 5" |
 | `sensor.librus_srednia_<przedmiot>` | **Średnia** z danego przedmiotu (np. `sensor.librus_srednia_matematyka`) | float (wykres 📈) |
 
@@ -183,27 +183,27 @@ Legenda ikon:
 
 ### Karta planu lekcji
 
-> Znajdź nazwy encji w **Developer Tools → States** (szukaj `plan_lekcji` i `nastepna_lekcja`).
+> Znajdź nazwy encji w **Developer Tools → States** (szukaj `plan_lekcji` i `nastepna_lekcja`). Dokładny `entity_id` zależy od konta: przed nazwą HA dodaje imię ucznia, a czasem też nazwę obszaru, więc `imie_nazwisko` w przykładzie trzeba podmienić.
 > Plan obejmuje bieżący i następny tydzień (jedno odświeżenie co 2 h, jak reszta danych).
-> Atrybut `uwagi` zawiera adnotacje Librusa, np. o zastępstwie lub odwołanej lekcji.
-> Plan obejmuje tylko bieżący i następny tydzień, więc w czasie ferii `sensor.nastepna_lekcja` pokazuje `brak`, dopóki Librus nie opublikuje nowego planu.
+> Atrybut `uwagi` zawiera adnotacje Librusa (np. `zastępstwo`, `odwołane`); lekcje odwołane mają `odwolana: true`, nie liczą się do stanu i nie są „następną lekcją”. Atrybut `liczba_odwolanych` mówi, ile ich jest dziś; gdy odwołane są wszystkie lekcje, stan to `0`, ale lista `lekcje` nadal je zawiera (w karcie są przekreślone).
+> Plan obejmuje tylko bieżący i następny tydzień, więc w czasie ferii `sensor.librus_imie_nazwisko_nastepna_lekcja` pokazuje `brak`, dopóki Librus nie opublikuje nowego planu.
 > Szczegóły planu (nauczyciele, sale) to dane osobowe: atrybuty tych encji **nie są zapisywane w historii** (recorder), ale są widoczne dla użytkowników HA.
 
 ```yaml
 type: markdown
 title: 🕗 Plan lekcji
 content: >
-  {% set lekcje = state_attr('sensor.plan_lekcji_dzis', 'lekcje') %}
+  {% set lekcje = state_attr('sensor.librus_imie_nazwisko_plan_lekcji_dzis', 'lekcje') %}
   {% if lekcje %}
   | Nr | Godziny | Przedmiot | Nauczyciel / sala |
   |----|---------|-----------|-------------------|
-  {% for l in lekcje %}| {{ l.numer }} | {{ l.od }}–{{ l.do }} | {{ l.przedmiot | replace('|', '/') }}{% if l.uwagi %} ⚠️{% endif %} | {{ l.nauczyciel_sala | replace('|', '/') }} |
+  {% for l in lekcje %}| {{ l.numer }} | {{ l.od }}–{{ l.do }} | {{ '~~' if l.odwolana }}{{ l.przedmiot | replace('|', '/') }}{{ '~~' if l.odwolana }}{% if l.uwagi %} ⚠️{% endif %} | {{ l.nauczyciel_sala | replace('|', '/') }} |
   {% endfor %}
   {% else %}Dziś bez lekcji.{% endif %}
 
-  **Następna lekcja:** {{ states('sensor.nastepna_lekcja') }}
-  {% if state_attr('sensor.nastepna_lekcja', 'od') %}
-  ({{ state_attr('sensor.nastepna_lekcja', 'dzien') }}, {{ state_attr('sensor.nastepna_lekcja', 'od') }}){% endif %}
+  **Następna lekcja:** {{ states('sensor.librus_imie_nazwisko_nastepna_lekcja') }}
+  {% if state_attr('sensor.librus_imie_nazwisko_nastepna_lekcja', 'od') %}
+  ({{ state_attr('sensor.librus_imie_nazwisko_nastepna_lekcja', 'dzien') }}, {{ state_attr('sensor.librus_imie_nazwisko_nastepna_lekcja', 'od') }}){% endif %}
 ```
 
 ### Karta terminarza (wszystkie zdarzenia)
