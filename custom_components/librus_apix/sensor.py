@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.update_coordinator import (
@@ -650,16 +650,19 @@ class _LibrusPlanSensor(CoordinatorEntity, SensorEntity):
         """Biezacy czas lokalny HA (bez strefy, jak godziny w planie Librusa)."""
         return dt_util.now().replace(tzinfo=None)
 
+    @callback
+    def _odswiez_stan(self, _now: datetime) -> None:
+        """Przelicz stan na pelnej minucie. Musi byc @callback: inaczej HA uruchomi to w watku."""
+        self.async_write_ha_state()
+
     async def async_added_to_hass(self) -> None:
         """Odswiezaj stan co minute (zmiana lekcji / polnoc), niezaleznie od koordynatora."""
         await super().async_added_to_hass()
-
-        def _tick(_now: datetime) -> None:
-            self.async_write_ha_state()
-
-        # Co minute, na pelnej minucie (zmiana lekcji / polnoc). Stan zapisuje sie tylko,
-        # gdy faktycznie sie zmienil, wiec nie powstaje wpis w historii co minute.
-        self.async_on_remove(async_track_time_change(self.hass, _tick, second=0))
+        # Na pelnej minucie. Stan zapisuje sie tylko, gdy faktycznie sie zmienil, wiec nie
+        # powstaje wpis w historii co minute.
+        self.async_on_remove(
+            async_track_time_change(self.hass, self._odswiez_stan, second=0)
+        )
 
 
 class LibrusPlanDzisSensor(_LibrusPlanSensor):

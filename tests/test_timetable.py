@@ -407,3 +407,24 @@ def test_czujnik_plan_dzis_gdy_wszystkie_lekcje_odwolane():
         assert len(attrs["lekcje"]) == 2
     finally:
         p.stop()
+
+
+# --- cykliczne odswiezanie stanu --------------------------------------------
+
+
+def test_odswiezanie_stanu_to_callback_w_petli_zdarzen():
+    """Zwykla funkcja trafilaby do watku roboczego i async_write_ha_state rzucilby RuntimeError."""
+    from homeassistant.core import is_callback
+
+    assert is_callback(LibrusPlanDzisSensor._odswiez_stan)
+    assert is_callback(LibrusNastepnaLekcjaSensor._odswiez_stan)
+
+
+def test_czujnik_rejestruje_odswiezanie_na_pelnej_minucie():
+    czujnik = LibrusNastepnaLekcjaSensor(_koordynator(PLAN), SimpleNamespace(entry_id="e1"))
+    czujnik.hass = MagicMock()
+    with patch.object(sensor_mod, "async_track_time_change") as track:
+        asyncio.run(czujnik.async_added_to_hass())
+    track.assert_called_once()
+    args, kwargs = track.call_args
+    assert args[1] == czujnik._odswiez_stan and kwargs == {"second": 0}
